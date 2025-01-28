@@ -2,38 +2,54 @@
   become: yes
   tasks:
     - fail:
-       msg: "OS should be Ubuntu 22.04, not {{ ansible_distribution }} {{ ansible_distribution_version }}"
-      when: ansible_distribution != 'Ubuntu' or ansible_distribution_version != '22.04'
+       msg: "OS should be Debian 12, not {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      when: ansible_distribution != 'Ubuntu' or ansible_distribution_version != '24.04' or ansible_architecture != 'aarch64'
 
     - name: update APT packages
       apt:
         update_cache: yes
+        upgrade: yes
+    - name: Install longhorn deps
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - open-iscsi
+        - nfs-common
+    - name: Check if reboot required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
 
-    - name: reboot and wait for reboot to complete
+    - name: Reboot if required
       reboot:
+      when: reboot_required_file.stat.exists == true
 
     - name: disable SWAP (Kubeadm requirement)
       shell: |
         swapoff -a
 
-    - name: disable SWAP in fstab (Kubeadm requirement)
-      replace:
-        path: /etc/fstab
-        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
-        replace: '# \1'
-
-    - name: create an empty file for the Containerd module
+    - name: create an empty file for the CRI-O module
       copy:
         content: ""
-        dest: /etc/modules-load.d/containerd.conf
+        dest: /etc/modules-load.d/crio.conf
         force: no
 
-    - name: configure modules for Containerd
+    - name: configure modules for CRI-O
       blockinfile:
-        path: /etc/modules-load.d/containerd.conf
+        path: /etc/modules-load.d/crio.conf
         block: |
              overlay
              br_netfilter
+    - name: Enable container features
+      replace:
+        path: /boot/firmware/cmdline.txt
+        regexp: '^([\w](?!.*\b{{ item }}\b).*)$'
+        replace: '\1 {{ item }}'
+      with_items:
+      - "cgroup_enable=cpuset"
+      - "cgroup_memory=1"
+      - "cgroup_enable=memory"
 
     - name: create an empty file for Kubernetes sysctl params
       copy:
@@ -58,22 +74,22 @@
         name: apt-transport-https
         state: present
 
-    - name: add Docker apt-key
+    - name: add CRI-O apt-key
       get_url:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        dest: /etc/apt/keyrings/docker-apt-keyring.asc
+        url: https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.30/deb/Release.key
+        dest: /etc/apt/keyrings/cri-o-apt-keyring.asc
         mode: '0644'
         force: true
 
-    - name: add Docker's APT repository
+    - name: add CRI-O's APT repository
       apt_repository:
-        repo: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker-apt-keyring.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        repo: "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.asc] https://pkgs.k8s.io/addons:/cri-o:/stable:/v1.30/deb/ /"
         state: present
         update_cache: yes
 
     - name: add Kubernetes apt-key
       get_url:
-        url: https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key
+        url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
         dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
         mode: '0644'
         force: true
@@ -84,41 +100,27 @@
         state: present
         update_cache: yes
 
-    - name: install Containerd
+    - name: install CRI-O
       apt:
-        name: containerd.io
+        name: cri-o
         state: present
 
-    - name: create Containerd directory
-      file:
-        path: /etc/containerd
-        state: directory
-
-    - name: add Containerd configuration
-      shell: /usr/bin/containerd config default > /etc/containerd/config.toml
-
-    - name: configuring the systemd cgroup driver for Containerd
-      lineinfile:
-        path: /etc/containerd/config.toml
-        regexp: '            SystemdCgroup = false'
-        line: '            SystemdCgroup = true'
-
-    - name: enable the Containerd service and start it
+    - name: enable the CRI-O service and start it
       systemd:
-        name: containerd
+        name: crio
         state: restarted
         enabled: yes
         daemon-reload: yes
 
     - name: install Kubelet
       apt:
-        name: kubelet=1.29.*
+        name: kubelet
         state: present
         update_cache: true
 
     - name: install Kubeadm
       apt:
-        name: kubeadm=1.29.*
+        name: kubeadm
         state: present
 
     - name: enable the Kubelet service, and enable it persistently
@@ -149,6 +151,6 @@
   tasks:
     - name: install Kubectl
       apt:
-        name: kubectl=1.29.*
+        name: kubectl
         state: present
         force: yes # allow downgrades

@@ -30,14 +30,14 @@
              - pods
 
     - name: initialize the cluster (this could take some time)
-      shell: kubeadm init --config /etc/kubernetes/kubeadm-config.yaml >> cluster_initialized.log
+      shell: kubeadm init --skip-phases=addon/kube-proxy --config /etc/kubernetes/kubeadm-config.yaml >> cluster_initialized.log
       args:
-        chdir: /home/ubuntu
+        chdir: /home/douball
         creates: cluster_initialized.log
 
     - name: create .kube directory
       become: yes
-      become_user: ubuntu
+      become_user: douball
       file:
         path: $HOME/.kube
         state: directory
@@ -46,14 +46,13 @@
     - name: copy admin.conf to user's kube config
       copy:
         src: /etc/kubernetes/admin.conf
-        dest: /home/ubuntu/.kube/config
+        dest: /home/douball/.kube/config
         remote_src: yes
-        owner: ubuntu
+        owner: douball
 
-    - name: install Pod network
-      become: yes
-      become_user: ubuntu
-      shell: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml >> pod_network_setup.log
+    - name: Untaint control node
+      become_user: douball
+      shell: kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule- >> taint.log
       args:
         chdir: $HOME
-        creates: pod_network_setup.log
+        creates: taint.log
